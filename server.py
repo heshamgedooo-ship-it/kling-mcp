@@ -399,27 +399,37 @@ async def kling_get_packages() -> str:
 @mcp.tool()
 async def pollo_generate_video(
     prompt: str,
-    model: str = "pollo-v1-6",
+    provider: str = "pollo",
+    model: str = "pollo-v2-0",
     aspect_ratio: str = "16:9",
     resolution: str = "720p",
     length: int = 5,
     mode: str = "basic",
     negative_prompt: str = "",
 ) -> str:
-    """Generate a video using Pollo AI — supports 50+ models in one tool.
-    model options: pollo-v2-0, pollo-v1-6, pollo-v1-5 (Pollo native)
-      kling-v3, kling-v2-6, kling-v2-0, kling-v1-6 (Kling via Pollo)
-      veo3, veo2 (Google), sora-2-pro, sora-2 (OpenAI)
-      runway-gen4, runway-gen3 (Runway), hailuo-01 (Hailuo)
-      pika-2-2, pika-2-1 (Pika), wan-2-6, wan-2-1 (Wan)
-    resolution: 480p, 720p, 1080p
-    length: 5 or 10 seconds
-    mode: basic or pro"""
+    """Generate a video using Pollo AI — 55+ models across all providers.
+
+    provider/model combinations:
+      pollo      → pollo-v2-0, pollo-v1-6, pollo-v1-5
+      bytedance  → seedance-2-0, seedance-2-0-fast, seedance-1-5-pro, seedance-pro, seedance-pro-fast, seedance
+      kling-ai   → kling-v3, kling-v2-6, kling-v2-5-turbo, kling-v2-1-master, kling-v2-1, kling-v2, kling-video-o1, kling-v1-6, kling-v1-5, kling-v1
+      google     → veo3, veo3-fast, veo3-1, veo3-1-fast, veo2
+      sora       → sora-2-pro, sora-2
+      runway     → runway-gen-4-turbo, runway-gen-3-turbo
+      minimax    → minimax-hailuo-2.3, minimax-hailuo-2.3-fast, minimax-hailuo-02, video-01
+      pika       → pika-v2-2, pika-v2-1
+      wanx       → wan-v2-6, wan-v2-5-preview, wan-v2-2-plus, wan-v2-2-flash, wanx-v2-1
+      luma       → luma-ray-2-0, luma-ray-2-0-flash, luma-ray-1-6
+      pixverse   → pixverse-v5-5, pixverse-v5, pixverse-v4-5, pixverse-v4, pixverse-v3-5
+      vidu       → viduq3-pro, viduq2-pro, viduq2-turbo, vidu-q1, vidu-v2-0, vidu-v1-5
+      hunyuan    → hunyuan
+
+    resolution: 480p, 720p, 1080p | length: 5 or 10 | mode: basic or pro"""
     async with httpx.AsyncClient(timeout=30) as client:
         payload: dict = {"input": {"prompt": prompt, "aspectRatio": aspect_ratio, "resolution": resolution, "length": length, "mode": mode}}
         if negative_prompt:
             payload["input"]["negativePrompt"] = negative_prompt
-        res = await client.post(f"{POLLO_BASE_URL}/generation/pollo/{model}", headers=pollo_headers(), json=payload)
+        res = await client.post(f"{POLLO_BASE_URL}/generation/{provider}/{model}", headers=pollo_headers(), json=payload)
         data = res.json()
         task_id = data.get("taskId")
         if not task_id:
@@ -433,17 +443,19 @@ async def pollo_generate_video(
 async def pollo_animate_image(
     image_url: str,
     prompt: str = "",
+    provider: str = "pollo",
     model: str = "pollo-v1-6",
     resolution: str = "720p",
     length: int = 5,
     mode: str = "basic",
 ) -> str:
-    """Animate an image into a video using Pollo AI (image-to-video). Supports 50+ models."""
+    """Animate an image into a video using Pollo AI (image-to-video).
+    Use same provider/model options as pollo_generate_video."""
     async with httpx.AsyncClient(timeout=30) as client:
         payload: dict = {"input": {"image": image_url, "resolution": resolution, "length": length, "mode": mode}}
         if prompt:
             payload["input"]["prompt"] = prompt
-        res = await client.post(f"{POLLO_BASE_URL}/generation/pollo/{model}", headers=pollo_headers(), json=payload)
+        res = await client.post(f"{POLLO_BASE_URL}/generation/{provider}/{model}", headers=pollo_headers(), json=payload)
         data = res.json()
         task_id = data.get("taskId")
         if not task_id:
@@ -451,6 +463,29 @@ async def pollo_animate_image(
         result = await pollo_wait(client, task_id)
         video_url = result.get("output", {}).get("url") or result.get("url", "")
         return f"Video ready!\nURL: {video_url}\nTask ID: {task_id}" if video_url else f"Done\n{result}"
+
+
+@mcp.tool()
+async def pollo_generate_image(
+    prompt: str,
+    model: str = "nano-banana-2",
+    aspect_ratio: str = "1:1",
+) -> str:
+    """Generate an image using Pollo AI.
+    model: nano-banana (Google), nano-banana-2 (Google), nano-banana-pro (Google), pollojourney-v7-image (Pollo)
+    aspect_ratio: 1:1, 16:9, 9:16, 4:3"""
+    async with httpx.AsyncClient(timeout=30) as client:
+        provider = "pollojourney" if "pollojourney" in model else "google"
+        endpoint = f"{POLLO_BASE_URL}/generation/{provider}/{model}/image"
+        payload: dict = {"input": {"prompt": prompt, "aspectRatio": aspect_ratio}}
+        res = await client.post(endpoint, headers=pollo_headers(), json=payload)
+        data = res.json()
+        task_id = data.get("taskId")
+        if not task_id:
+            return f"Error: {data}"
+        result = await pollo_wait(client, task_id)
+        image_url = result.get("output", {}).get("url") or result.get("url", "")
+        return f"Image ready!\nURL: {image_url}\nTask ID: {task_id}" if image_url else f"Done\n{result}"
 
 
 @mcp.tool()
