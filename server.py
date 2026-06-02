@@ -110,9 +110,12 @@ class AutoApproveOAuthProvider(OAuthAuthorizationServerProvider):
 # ── FastMCP setup ─────────────────────────────────────────────────────────────
 
 oauth_provider = AutoApproveOAuthProvider()
+PORT = int(os.environ.get("PORT", 8000))
 
 mcp = FastMCP(
     "kling",
+    host="0.0.0.0",
+    port=PORT,
     auth_server_provider=oauth_provider,
     auth=AuthSettings(
         issuer_url=AnyUrl(SERVER_URL),
@@ -221,5 +224,4 @@ async def check_credits() -> str:
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
+    mcp.run(transport="streamable-http")
