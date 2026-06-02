@@ -1,20 +1,135 @@
 #!/usr/bin/env python3
 import asyncio
 import os
+import secrets
 import time
 import httpx
-import jwt
+import jwt as pyjwt
+from urllib.parse import urlencode, urlparse, urlunparse, parse_qs
+
 from mcp.server.fastmcp import FastMCP
+from mcp.server.auth.provider import (
+    OAuthAuthorizationServerProvider,
+    AuthorizationCode,
+    AuthorizationParams,
+    AccessToken,
+    RefreshToken,
+)
+from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from pydantic import AnyUrl
 
 KLING_ACCESS_KEY = os.environ.get("KLING_ACCESS_KEY", "")
 KLING_SECRET_KEY = os.environ.get("KLING_SECRET_KEY", "")
 KLING_BASE_URL = "https://api.klingai.com"
+SERVER_URL = os.environ.get("SERVER_URL", "https://kling-mcp-production.up.railway.app")
 
-mcp = FastMCP("kling")
+
+# ── Simple in-memory OAuth provider (auto-approves everything) ────────────────
+
+class AutoApproveOAuthProvider(OAuthAuthorizationServerProvider):
+    def __init__(self):
+        self.clients: dict[str, OAuthClientInformationFull] = {}
+        self.auth_codes: dict[str, dict] = {}
+        self.tokens: dict[str, dict] = {}
+
+    async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
+        return self.clients.get(client_id)
+
+    async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        self.clients[client_info.client_id] = client_info
+
+    async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
+        code = secrets.token_urlsafe(32)
+        self.auth_codes[code] = {
+            "client_id": client.client_id,
+            "redirect_uri": str(params.redirect_uri),
+            "code_challenge": params.code_challenge,
+            "expires_at": time.time() + 600,
+            "scopes": params.scopes or [],
+        }
+        redirect = str(params.redirect_uri)
+        sep = "&" if "?" in redirect else "?"
+        redirect += f"{sep}code={code}"
+        if params.state:
+            redirect += f"&state={params.state}"
+        return redirect
+
+    async def load_authorization_code(self, client: OAuthClientInformationFull, authorization_code: str) -> AuthorizationCode | None:
+        data = self.auth_codes.get(authorization_code)
+        if not data or data["expires_at"] < time.time():
+            return None
+        return AuthorizationCode(
+            code=authorization_code,
+            client_id=client.client_id,
+            redirect_uri=AnyUrl(data["redirect_uri"]),
+            redirect_uri_provided_explicitly=True,
+            expires_at=data["expires_at"],
+            scopes=data["scopes"],
+            code_challenge=data["code_challenge"],
+        )
+
+    async def exchange_authorization_code(self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode) -> OAuthToken:
+        self.auth_codes.pop(authorization_code.code, None)
+        token = secrets.token_urlsafe(32)
+        self.tokens[token] = {
+            "client_id": client.client_id,
+            "expires_at": time.time() + 86400 * 30,
+            "scopes": authorization_code.scopes,
+        }
+        return OAuthToken(
+            access_token=token,
+            token_type="bearer",
+            expires_in=86400 * 30,
+        )
+
+    async def load_access_token(self, token: str) -> AccessToken | None:
+        data = self.tokens.get(token)
+        if not data:
+            return None
+        if data["expires_at"] < time.time():
+            return None
+        return AccessToken(
+            token=token,
+            client_id=data["client_id"],
+            scopes=data["scopes"],
+            expires_at=int(data["expires_at"]),
+        )
+
+    async def load_refresh_token(self, client: OAuthClientInformationFull, refresh_token: str) -> RefreshToken | None:
+        return None
+
+    async def exchange_refresh_token(self, client: OAuthClientInformationFull, refresh_token: RefreshToken, scopes: list) -> OAuthToken:
+        raise NotImplementedError
+
+    async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
+        if isinstance(token, AccessToken):
+            self.tokens.pop(token.token, None)
+
+
+# ── FastMCP setup ─────────────────────────────────────────────────────────────
+
+oauth_provider = AutoApproveOAuthProvider()
+
+mcp = FastMCP(
+    "kling",
+    auth_server_provider=oauth_provider,
+    auth=AuthSettings(
+        issuer_url=AnyUrl(SERVER_URL),
+        resource_server_url=AnyUrl(SERVER_URL),
+        client_registration_options=ClientRegistrationOptions(
+            enabled=True,
+            valid_scopes=["mcp"],
+            default_scopes=["mcp"],
+        ),
+    ),
+)
+
+# ── Kling helpers ─────────────────────────────────────────────────────────────
 
 def generate_token() -> str:
     now = int(time.time())
-    return jwt.encode(
+    return pyjwt.encode(
         {"iss": KLING_ACCESS_KEY, "exp": now + 1800, "nbf": now - 5},
         KLING_SECRET_KEY, algorithm="HS256"
     )
@@ -43,6 +158,8 @@ def extract_video_url(data):
     works = data.get("data", {}).get("task_result", {}).get("videos", [])
     return works[0].get("url", "") if works else ""
 
+
+# ── Tools ─────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
 async def generate_image(prompt: str, negative_prompt: str = "", aspect_ratio: str = "1:1", model: str = "kling-v1-5", n: int = 1) -> str:
